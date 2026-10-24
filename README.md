@@ -18,21 +18,29 @@ and [Pygments](https://pygments.org/). No GUI, no Electron: just your terminal.
 
 ## Features
 
-- **Editor**: syntax highlighting, line numbers (absolute or relative),
-  current-line highlight, word wrap, auto-indent, auto-close brackets,
-  word completion and VSCode-style line operations.
-- **Tabs**: one tab per file, dirty marker, mouse and keyboard switching.
-- **Explorer**: lazy file tree, expand/collapse, hidden files, quick open,
-  reveals the active file, skips `node_modules`, `.git`, `__pycache__`, etc.
+- **Editor**: syntax highlighting, absolute or relative line numbers,
+  current-line highlight, configurable line height, word wrap, auto-indent,
+  indentation/language detection, auto-closing brackets, quotes and comments,
+  bracket pair colorization, color decorators, code folding and completion.
+- **VSCode-style chrome**: File/Edit menus, editor-aligned tabs, separators,
+  MC-inspired borders, centered dialogs and drop shadows.
+- **Tabs**: one tab per file, dirty marker, blinking block cursor, mouse and
+  keyboard switching.
+- **Explorer**: lazy file tree, full-row selection, expand/collapse, hidden
+  files, quick open, active-file reveal, and filtered system directories.
 - **Find & replace**: live highlighting of all matches, current match,
   case/whole-word/regex toggles, replace one or replace all.
-- **Command palette**: fuzzy search over every command, including themes.
-- **Themes**: `vscode-dark`, `vscode-light`, `dracula`, `monokai`, `nord`.
+- **Command palette**: fuzzy search over every command, including themes and
+  settings.
+- **Themes**: `vscode-dark`, `vscode-light`, `dracula`, `monokai`, `nord`,
+  and `mc` (Midnight Commander).
 - **Files**: encoding-aware reading (UTF-8, BOM, latin-1 fallback),
   CRLF/LF preservation, atomic saves, large-file and binary-file guards.
 - **Status bar**: git branch, cursor position, indentation, encoding, EOL,
   language.
-- **Session config**: theme and view settings persist to JSON.
+- **Settings**: F1 opens the command palette; choose `Preferences: Open
+  Settings` for searchable `Editor`, `Files`, `Workbench`, and `Theme` tabs.
+  Changes persist to JSON.
 
 ## Requirements
 
@@ -85,6 +93,8 @@ given, the workspace is the first file's folder.
 | `Ctrl+PageDown` / `Ctrl+PageUp` | Next / previous editor |
 | `Ctrl+B` | Toggle sidebar |
 | `F1` | Command palette |
+| `F9` | Open File menu |
+| `Ctrl+F9` | Toggle code folding |
 | `Ctrl+G` | Go to line |
 | `Ctrl+F` | Find |
 | `Ctrl+R` | Find and replace |
@@ -112,8 +122,11 @@ Click a tab to activate it, or its `✕` to close it (the click is handled on
 press, so a slightly wobbly release still closes the tab). `Ctrl+W` closes
 the current editor from the keyboard.
 
-In the command palette: type to fuzzy-filter, `Up`/`Down` (or `Ctrl+P`/`Ctrl+N`)
-to move, `Enter` to run, `Tab` to complete the query, `Esc` to cancel.
+In the File/Edit menus, use the mouse or `Up`/`Down` and `Enter`; `Esc` closes
+the menu. In the command palette: type to fuzzy-filter, `Up`/`Down` (or
+`Ctrl+P`/`Ctrl+N`) to move, `Enter` to run, `Tab` to complete the query, and
+`Esc` to cancel. In Settings, click a tab or use `Left`/`Right` and
+`Tab`/`Shift+Tab` to switch sections.
 Quick open (`Ctrl+P`) also offers a **Create file** entry for unknown paths.
 
 ## Find bar
@@ -136,6 +149,8 @@ else `~/.config/vcli/config.json`:
   "theme": "dracula",
   "tab_size": 4,
   "use_spaces": true,
+  "detect_indentation": true,
+  "detect_language": true,
   "line_numbers": true,
   "relative_line_numbers": false,
   "highlight_current_line": true,
@@ -148,6 +163,12 @@ else `~/.config/vcli/config.json`:
   "mouse": true,
   "auto_indent": true,
   "auto_close_brackets": true,
+  "auto_closing_quotes": true,
+  "auto_closing_comments": true,
+  "bracket_pair_colorization": true,
+  "color_decorators": true,
+  "format_on_save": false,
+  "code_folding": true,
   "trim_trailing_whitespace_on_save": false,
   "confirm_exit": true
 }
@@ -165,6 +186,9 @@ inside the application. `line_height` accepts values from 1 to 3.
   `stty -ixon; vcli`.
 - Mouse support needs a terminal that reports mouse events; toggle it with
   `View: Toggle Mouse Support` in the palette.
+- In Konsole, enable mouse reporting for the terminal profile/application if
+  clicks are not reaching vcli. Every mouse-driven control also has keyboard
+  navigation.
 - If colours look wrong, try a true-colour terminal (`COLORTERM=truecolor`)
   and set `TERM=xterm-256color`.
 - Paste is handled by the terminal; on some terminals use
@@ -195,6 +219,7 @@ src/vcli/
   theme.py        theme palettes -> prompt_toolkit styles
   config.py       persisted settings
   ui/             editor pane, gutter, find bar, picker, tabs, tree, status
+  processors.py   bracket coloring and color-decorator processors
 ```
 
 ## Roadmap

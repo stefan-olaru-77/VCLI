@@ -81,7 +81,8 @@ class FileTreeControl(UIControl):
             name = node.name + ("/" if node.is_dir else "")
             fragments.append((style, name, handler))
             used = len(indent) + 2 + len(name)
-            fragments.append(("class:sidebar", " " * max(0, width - used)))
+            fill_style = "class:sidebar.item.selected" if is_selected else "class:sidebar"
+            fragments.append((fill_style, " " * max(0, width - used)))
             lines.append(fragments)
 
         for _ in range(height - len(rows)):

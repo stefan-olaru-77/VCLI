@@ -22,9 +22,9 @@ from .. import actions
 from ..config import Config
 from ..emmet import expand_abbreviation
 from ..fileio import LoadedFile, write_file
-from ..languages import Language, language_for_path
+from ..languages import PLAIN_TEXT, Language, language_for_path
 from .margin import GutterMargin
-from .processors import SearchHighlighter
+from .processors import BracketPairColorizer, ColorDecorator, SearchHighlighter
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..app import EditorApp
@@ -36,30 +36,45 @@ HIGHLIGHT_LIMIT = 1_500_000
 class LineHeightBufferControl(BufferControl):
     """BufferControl that adds visual spacing between logical lines."""
 
-    def __init__(self, *args, line_height, **kwargs) -> None:
+    def __init__(self, *args, line_height, hidden_lines=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._line_height = line_height
+        self._hidden_lines = hidden_lines or (lambda: set())
 
     def create_content(self, width: int, height: int, preview_search: bool = False):
         base = super().create_content(width, height, preview_search)
         line_height = max(1, int(self._line_height()))
+        hidden = set(self._hidden_lines())
+        visible_lines = [
+            line for line in range(base.line_count) if line not in hidden
+        ]
+        if not visible_lines:
+            visible_lines = [0]
 
         def get_line(index: int):
             logical, offset = divmod(index, line_height)
-            if logical >= base.line_count or offset:
+            if logical >= len(visible_lines) or offset:
                 return []
-            return base.get_line(logical)
+            return base.get_line(visible_lines[logical])
+
+        def display_row(row: int) -> int:
+            if row in visible_lines:
+                return visible_lines.index(row)
+            previous = [index for index, line in enumerate(visible_lines) if line < row]
+            return previous[-1] if previous else 0
 
         from prompt_toolkit.layout.controls import UIContent
 
         return UIContent(
             get_line=get_line,
-            line_count=base.line_count * line_height,
+            line_count=len(visible_lines) * line_height,
             cursor_position=base.cursor_position._replace(
-                y=base.cursor_position.y * line_height
+                y=display_row(base.cursor_position.y) * line_height
             ),
             menu_position=(
-                base.menu_position._replace(y=base.menu_position.y * line_height)
+                base.menu_position._replace(
+                    y=display_row(base.menu_position.y) * line_height
+                )
                 if base.menu_position is not None
                 else None
             ),
@@ -69,9 +84,15 @@ class LineHeightBufferControl(BufferControl):
     def mouse_handler(self, mouse_event):
         line_height = max(1, int(self._line_height()))
         position = mouse_event.position
+        hidden = set(self._hidden_lines())
+        line_count = self.buffer.document.line_count
+        visible_lines = [line for line in range(line_count) if line not in hidden]
+        if not visible_lines:
+            visible_lines = [0]
+        display_row = min(position.y // line_height, len(visible_lines) - 1)
         return super().mouse_handler(
             MouseEvent(
-                position=position._replace(y=position.y // line_height),
+                position=position._replace(y=visible_lines[display_row]),
                 event_type=mouse_event.event_type,
                 button=mouse_event.button,
                 modifiers=mouse_event.modifiers,
@@ -133,13 +154,16 @@ class EditorPane:
         self.eol = loaded.newline if loaded else "\n"
         self.mtime = loaded.mtime if loaded else 0.0
         self.warnings = list(loaded.warnings) if loaded else []
-        self.language = language or language_for_path(path)
+        self.language = language or self._detected_language(path)
         self.saved_text = text
         self.dirty = False
         self.highlight_enabled = len(text) <= HIGHLIGHT_LIMIT
         self._closed = False
+        self.folded_lines: set[int] = set()
 
-        detected = actions.detect_indentation(text)
+        detected = (
+            actions.detect_indentation(text) if app.config.detect_indentation else None
+        )
         if detected is not None:
             self.use_spaces, self.tab_size = detected
         else:
@@ -166,10 +190,13 @@ class EditorPane:
             input_processors=[
                 HighlightMatchingBracketProcessor(chars="()[]{}"),
                 self.search_highlighter,
+                BracketPairColorizer(lambda: self._config().bracket_pair_colorization),
+                ColorDecorator(lambda: self._config().color_decorators),
             ],
             include_default_input_processors=True,
             focus_on_click=True,
             line_height=lambda: self._config().line_height,
+            hidden_lines=lambda: self.folded_lines if self._config().code_folding else set(),
         )
         self.window = Window(
             content=self.control,
@@ -185,11 +212,16 @@ class EditorPane:
                 bottom=self._config().scroll_off,
             ),
             allow_scroll_beyond_bottom=False,
+            char=" ",
+            style="class:editor",
         )
 
     # ------------------------------------------------------------- lifecycle
     def _config(self) -> Config:
         return self.app.config
+
+    def _detected_language(self, path: Path | None) -> Language:
+        return language_for_path(path) if self.app.config.detect_language else PLAIN_TEXT
 
     def _make_lexer(self):
         if not self.highlight_enabled:
@@ -306,7 +338,60 @@ class EditorPane:
             )
         else:
             payload, offset = "\n", 1
+        if self.app.config.auto_closing_comments and self.language.line_comment:
+            line_start = actions.line_start(text, cursor)
+            before = text[line_start:cursor].lstrip()
+            if before.startswith(self.language.line_comment):
+                marker = self.language.line_comment
+                payload += marker + " "
+                offset = len(payload)
         self.set_text(text[:cursor] + payload + text[cursor:], cursor + offset)
+
+    def refresh_preferences(self) -> None:
+        """Apply language and indentation detection changes to this pane."""
+        self.language = self._detected_language(self.path)
+        detected = (
+            actions.detect_indentation(self.buffer.text)
+            if self.app.config.detect_indentation
+            else None
+        )
+        if detected is not None:
+            self.use_spaces, self.tab_size = detected
+        else:
+            self.use_spaces = self.app.config.use_spaces
+            self.tab_size = self.app.config.tab_size
+        self.lexer = self._make_lexer()
+        self.app.invalidate()
+
+    def toggle_fold(self) -> None:
+        """Fold or unfold the indented block following the current line."""
+        if not self.app.config.code_folding:
+            self.app.notify("Code folding is disabled", error=True)
+            return
+        lines = self.buffer.text.split("\n")
+        header = self.buffer.document.cursor_position_row
+        if header >= len(lines) - 1:
+            return
+        current = lines[header]
+        indent = len(current) - len(current.lstrip(" \t"))
+        descendants: set[int] = set()
+        for index in range(header + 1, len(lines)):
+            line = lines[index]
+            if line.strip():
+                level = len(line) - len(line.lstrip(" \t"))
+                if level <= indent:
+                    break
+            descendants.add(index)
+        if not descendants:
+            self.app.notify("No foldable block on this line")
+            return
+        if descendants.issubset(self.folded_lines):
+            self.folded_lines.difference_update(descendants)
+            self.app.notify("Block unfolded")
+        else:
+            self.folded_lines.update(descendants)
+            self.app.notify("Block folded")
+        self.app.invalidate()
 
     def indent(self) -> None:
         sel = self.selection()
@@ -458,11 +543,11 @@ class EditorPane:
         if path is not None:
             self.path = target
             self.title = target.name
-            self.language = language_for_path(target)
+            self.language = self._detected_language(target)
             self.lexer = self._make_lexer()
 
         text = self.buffer.text
-        if self.app.config.trim_trailing_whitespace_on_save:
+        if self.app.config.trim_trailing_whitespace_on_save or self.app.config.format_on_save:
             trimmed = actions.trim_trailing_whitespace(text)
             if trimmed != text:
                 cursor = min(self.buffer.cursor_position, len(trimmed))

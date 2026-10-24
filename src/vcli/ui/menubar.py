@@ -46,6 +46,6 @@ class MenuBarControl(UIControl):
         x = mouse_event.position.x
         for start, end, menu in self._spans:
             if start <= x < end:
-                self.app.open_menu(menu)
+                self.app.open_menu(menu, anchor_x=start)
                 return None
         return NotImplemented

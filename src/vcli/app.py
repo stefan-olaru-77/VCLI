@@ -9,6 +9,7 @@ from pathlib import Path
 from prompt_toolkit import Application
 from prompt_toolkit.application import get_app
 from prompt_toolkit.clipboard import InMemoryClipboard
+from prompt_toolkit.cursor_shapes import CursorShape
 from prompt_toolkit.filters import Condition, has_completions, has_selection
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -92,6 +93,7 @@ class EditorApp:
             full_screen=True,
             mouse_support=Condition(lambda: self.config.mouse),
             clipboard=InMemoryClipboard(),
+            cursor=CursorShape.BLINKING_BLOCK,
             input=input,
             output=output,
             on_reset=self._on_reset,
@@ -119,6 +121,13 @@ class EditorApp:
         except Exception:
             return shutil.get_terminal_size((80, 24)).columns
 
+    @property
+    def terminal_height(self) -> int:
+        try:
+            return get_app().output.get_size().rows
+        except Exception:
+            return shutil.get_terminal_size((80, 24)).lines
+
     def run(self) -> None:
         self.application.run()
 
@@ -132,8 +141,16 @@ class EditorApp:
 
     def _build_layout(self) -> Layout:
         config = self.config
+        self.menubar_window = Window(self.menubar, height=1)
+        self.menubar_separator = Window(
+            height=1, char="\u2500", style="class:chrome.separator"
+        )
         self.tabbar_window = ConditionalContainer(
             Window(self.tabbar, height=1), Condition(lambda: self.config.show_tab_bar)
+        )
+        self.tabbar_separator = ConditionalContainer(
+            Window(height=1, char="\u2500", style="class:chrome.separator"),
+            Condition(lambda: self.config.show_tab_bar),
         )
 
         header = Window(
@@ -165,18 +182,28 @@ class EditorApp:
             ),
         )
         separator = Window(width=1, char="\u2502", style="class:separator")
-        body = VSplit(
-            [sidebar_container, separator, self.editor_host],
-            padding=0,
-        )
         find_container = ConditionalContainer(
             self.find.container, Condition(lambda: self.find.active)
         )
+        body = VSplit(
+            [
+                sidebar_container,
+                separator,
+                HSplit(
+                    [
+                        self.tabbar_window,
+                        self.tabbar_separator,
+                        find_container,
+                        self.editor_host,
+                    ]
+                ),
+            ],
+            padding=0,
+        )
         root = HSplit(
             [
-                Window(self.menubar, height=1),
-                self.tabbar_window,
-                find_container,
+                self.menubar_window,
+                self.menubar_separator,
                 body,
                 ConditionalContainer(
                     self.statusbar.container,
@@ -184,7 +211,10 @@ class EditorApp:
                 ),
             ]
         )
-        floats = FloatContainer(content=root, floats=[self.picker.float])
+        floats = FloatContainer(
+            content=root,
+            floats=[self.picker.shadow_float, self.picker.float],
+        )
         focused = self.tree_window if not self.documents else None
         return Layout(floats, focused_element=focused)
 
@@ -328,12 +358,13 @@ class EditorApp:
         self.picker.input_buffer.start_selection()
         self.picker.input_buffer.cursor_position = len(initial)
 
-    def open_menu(self, name: str) -> None:
+    def open_menu(self, name: str, anchor_x: int = 0) -> None:
         if name == "file":
             items = [
                 PickerItem("New File", "File", "Ctrl+N", self.new_file),
                 PickerItem("Open File...", "File", "Ctrl+O", self.picker.open_files),
                 PickerItem("Open Folder...", "File", "Ctrl+K Ctrl+O", self.open_folder),
+                PickerItem("Settings...", "Preferences", "F1", self.open_settings),
             ]
         else:
             items = [
@@ -344,7 +375,7 @@ class EditorApp:
                 PickerItem("Paste", "Edit", "Ctrl+V", lambda: self._editor_op("paste")),
                 PickerItem("Emmet: Expand Abbreviation", "Edit", "Ctrl+Alt+E", lambda: self._editor_op("expand_abbreviation")),
             ]
-        self.picker.open_menu(name.title(), items)
+        self.picker.open_menu(name.title(), items, anchor_x=anchor_x)
 
     def activate(self, index: int) -> None:
         if not 0 <= index < len(self.documents):
@@ -520,12 +551,25 @@ class EditorApp:
             if field == "show_hidden_files":
                 self.workspace.show_hidden = config.show_hidden_files
                 self.workspace.reload()
+            if field in {"detect_indentation", "detect_language", "use_spaces"}:
+                for pane in self.documents:
+                    pane.refresh_preferences()
             config.save(self.config_file)
             self.invalidate()
             self.open_settings()
 
         def cycle_line_height() -> None:
             config.line_height = config.line_height % 3 + 1
+            config.save(self.config_file)
+            self.invalidate()
+            self.open_settings()
+
+        def cycle_tab_size() -> None:
+            values = (2, 4, 8)
+            config.tab_size = values[(values.index(config.tab_size) + 1) % len(values)] if config.tab_size in values else 4
+            for pane in self.documents:
+                if not config.detect_indentation:
+                    pane.refresh_preferences()
             config.save(self.config_file)
             self.invalidate()
             self.open_settings()
@@ -539,7 +583,24 @@ class EditorApp:
                 search_text=f"{label} {value}",
             )
 
+        def theme_item() -> PickerItem:
+            return PickerItem(
+                "Theme: Color Theme",
+                description=config.theme,
+                action=self.picker.open_themes,
+                search_text=f"Theme Color Theme {config.theme}",
+            )
+
         items = [
+            PickerItem(
+                "Editor: Tab Size",
+                description=str(config.tab_size),
+                action=cycle_tab_size,
+                search_text="Editor Tab Size",
+            ),
+            bool_item("Editor: Use Spaces", "use_spaces"),
+            bool_item("Editor: Detect Indentation", "detect_indentation"),
+            bool_item("Editor: Detect Language", "detect_language"),
             bool_item("Editor: Highlight Current Line", "highlight_current_line"),
             PickerItem(
                 "Editor: Line Height",
@@ -552,12 +613,19 @@ class EditorApp:
             bool_item("Editor: Relative Line Numbers", "relative_line_numbers"),
             bool_item("Editor: Auto Indent", "auto_indent"),
             bool_item("Editor: Auto Close Brackets", "auto_close_brackets"),
+            bool_item("Editor: Auto Closing Quotes", "auto_closing_quotes"),
+            bool_item("Editor: Auto Closing Comments", "auto_closing_comments"),
+            bool_item("Editor: Bracket Pair Colorization", "bracket_pair_colorization"),
+            bool_item("Editor: Color Decorators", "color_decorators"),
+            bool_item("Editor: Format On Save", "format_on_save"),
+            bool_item("Editor: Code Folding", "code_folding"),
             bool_item("Files: Show Hidden Files", "show_hidden_files"),
             bool_item("Workbench: Show Sidebar", "show_sidebar"),
             bool_item("Workbench: Show Tab Bar", "show_tab_bar"),
             bool_item("Workbench: Show Status Bar", "show_status_bar"),
             bool_item("Workbench: Mouse Support", "mouse"),
             bool_item("Files: Confirm Exit", "confirm_exit"),
+            theme_item(),
         ]
         self.picker.open_menu("Settings", items, searchable=True)
 
@@ -678,6 +746,7 @@ class EditorApp:
         register("view.relativeNumbers", "View: Toggle Relative Line Numbers", "View", self.toggle_relative_numbers)
         register("view.hiddenFiles", "View: Toggle Hidden Files", "View", self.toggle_hidden_files)
         register("view.mouse", "View: Toggle Mouse Support", "View", self.toggle_mouse)
+        register("view.toggleFold", "View: Toggle Code Folding", "View", lambda: self._editor_op("toggle_fold"), "Ctrl+F9")
         register("view.theme", "Preferences: Color Theme", "View", self.picker.open_themes)
         register("preferences.settings", "Preferences: Open Settings", "Preferences", self.open_settings)
 
@@ -707,6 +776,7 @@ class EditorApp:
         keys = self.keys
         editor = Condition(self._editor_focused)
         auto_pairs = Condition(lambda: self.config.auto_close_brackets)
+        auto_quotes = Condition(lambda: self.config.auto_closing_quotes)
 
         # File / tab management (global).
         @keys.add("c-s")
@@ -783,6 +853,16 @@ class EditorApp:
         @keys.add("f10")
         def _wrap(event) -> None:
             self.toggle_word_wrap()
+
+        @keys.add("f9")
+        def _menu(event) -> None:
+            self.open_menu("file")
+
+        @keys.add("c-f9", filter=editor)
+        def _fold(event) -> None:
+            pane = self.active_pane
+            if pane is not None:
+                pane.toggle_fold()
 
         @keys.add("escape")
         def _escape(event) -> None:
@@ -907,17 +987,15 @@ class EditorApp:
             if list(buffer.document.selection_ranges()):
                 pane.replace_selection("")
                 return
-            if auto_pairs():
-                previous = text[cursor - 1 : cursor]
-                following = text[cursor : cursor + 1]
-                if (previous, following) in {
-                    ("(", ")"),
-                    ("[", "]"),
-                    ("{", "}"),
-                    ('"', '"'),
-                    ("'", "'"),
-                    ("`", "`"),
-                }:
+            previous = text[cursor - 1 : cursor]
+            following = text[cursor : cursor + 1]
+            bracket_pair = (previous, following) in {
+                ("(", ")"), ("[", "]"), ("{", "}"),
+            }
+            quote_pair = (previous, following) in {
+                ('"', '"'), ("'", "'"), ("`", "`"),
+            }
+            if (bracket_pair and auto_pairs()) or (quote_pair and auto_quotes()):
                     pane.set_text(
                         text[: cursor - 1] + text[cursor + 1 :], cursor - 1
                     )
@@ -969,7 +1047,24 @@ class EditorApp:
                     cursor + 1,
                 )
 
-            keys.add(opening, filter=editor & auto_pairs)(_insert)
+            pair_filter = auto_pairs if opening in "([{" else auto_quotes
+            keys.add(opening, filter=editor & pair_filter)(_insert)
+
+        @keys.add("*", filter=editor)
+        def _comment_open(event) -> None:
+            pane = self.active_pane
+            if pane is None or not self.config.auto_closing_comments:
+                event.current_buffer.insert_text("*")
+                return
+            opening = pane.language.block_comment[0] if pane.language.block_comment else None
+            closing = pane.language.block_comment[1] if pane.language.block_comment else None
+            text = pane.buffer.text
+            cursor = pane.buffer.cursor_position
+            if opening and closing and text[cursor - len(opening) + 1 : cursor] == opening[:-1]:
+                start = cursor - len(opening) + 1
+                pane.set_text(text[:start] + opening + closing + text[cursor:], start + len(opening))
+            else:
+                event.current_buffer.insert_text("*")
 
         for closing, opening in [(")", "("), ("]", "["), ("}", "{")]:
 
@@ -1021,6 +1116,8 @@ Keyboard Shortcuts
   Ctrl+/          Toggle line comment
   Tab / Shift+Tab Indent / outdent
   F10             Toggle word wrap
+  F9              Open the File menu
+  Ctrl+F9         Toggle code folding on the current block
   Ctrl+Space      Word completion
 
 Explorer: arrow keys navigate, Enter opens, Right/Left expand/collapse.

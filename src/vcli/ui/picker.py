@@ -30,6 +30,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..app import EditorApp
 
 RESULTS_ROWS = 10
+SETTINGS_ROWS = 16
 
 
 @dataclass
@@ -58,6 +59,8 @@ class PickerOverlay:
         self.filtered: list[tuple[PickerItem, list[int]]] = []
         self.index = 0
         self._store: dict[str, object] = {}
+        self._frame_width = 40
+        self.settings_section = ""
 
         self.input_buffer = Buffer(
             name="picker",
@@ -82,26 +85,79 @@ class PickerOverlay:
             ],
             height=1,
         )
+        menu_header = ConditionalContainer(
+            Window(
+                FormattedTextControl(
+                    lambda: [("class:picker.prompt", f" {self.title} ")]
+                ),
+                height=1,
+                style="class:picker.input",
+            ),
+            Condition(lambda: self.mode == "menu"),
+        )
+        input_container = ConditionalContainer(
+            input_row, Condition(lambda: self.mode != "menu")
+        )
+        self.settings_tabs = ConditionalContainer(
+            Window(
+                FormattedTextControl(self._settings_tabs_text, focusable=False),
+                height=1,
+                style="class:picker.tabs",
+            ),
+            Condition(lambda: self.mode == "settings"),
+        )
         separator = Window(height=1, char="\u2500", style="class:picker.border")
         results = Window(
             FormattedTextControl(self._render_results, focusable=False),
             height=RESULTS_ROWS,
             style="class:picker",
         )
+        self.results_window = results
         footer = Window(
             FormattedTextControl(self._footer_text, focusable=False),
             height=1,
             style="class:picker.footer",
         )
-        self.container = HSplit([input_row, separator, results, footer])
+        self.container = HSplit(
+            [menu_header, input_container, self.settings_tabs, separator, results, footer]
+        )
+        border_top = Window(
+            FormattedTextControl(self._border_top), height=1, style="class:picker.border"
+        )
+        border_bottom = Window(
+            FormattedTextControl(self._border_bottom), height=1, style="class:picker.border"
+        )
+        border_side = lambda: Window(
+            width=1, char="\u2502", style="class:picker.border"
+        )
+        self.frame = HSplit(
+            [
+                border_top,
+                VSplit([border_side(), self.container, border_side()]),
+                border_bottom,
+            ]
+        )
+        self.shadow_window = Window(char=" ", style="class:picker.shadow")
+        self.shadow_float = Float(
+            content=ConditionalContainer(
+                self.shadow_window, Condition(lambda: self.active)
+            ),
+            top=3,
+            left=3,
+            width=40,
+            height=RESULTS_ROWS + 5,
+            z_index=9,
+            transparent=False,
+            allow_cover_cursor=True,
+        )
         self.float = Float(
             content=ConditionalContainer(
-                self.container, Condition(lambda: self.active)
+                self.frame, Condition(lambda: self.active)
             ),
             top=2,
             left=2,
-            width=lambda: max(40, min(96, self.app.terminal_width - 8)),
-            height=RESULTS_ROWS + 3,
+            width=40,
+            height=RESULTS_ROWS + 5,
             z_index=10,
             transparent=False,
             allow_cover_cursor=True,
@@ -141,10 +197,18 @@ class PickerOverlay:
         self._store["root"] = root
 
     def open_menu(
-        self, title: str, items: list[PickerItem], *, searchable: bool = False
+        self,
+        title: str,
+        items: list[PickerItem],
+        *,
+        searchable: bool = False,
+        anchor_x: int = 0,
     ) -> None:
         """Open a fixed menu or a searchable settings menu."""
         self._open("settings" if searchable else "menu", items, title)
+        if not searchable:
+            self.float.left = max(0, anchor_x)
+            self.shadow_float.left = self.float.left + 1
 
     def open_line(self) -> None:
         pane = self.app.active_pane
@@ -198,11 +262,35 @@ class PickerOverlay:
         self.title = title
         self.items = items
         self.index = 0
+        if mode == "settings":
+            sections = self._settings_sections(items)
+            self.settings_section = sections[0] if sections else ""
         self.active = True
+        menu = mode == "menu"
+        self.float.width = self._float_width() + 2
+        self._frame_width = self.float.width
+        self.float.height = self._float_height()
+        if menu:
+            self.float.top = 2
+            self.float.left = 0
+        else:
+            self.float.top = max(0, (self.app.terminal_height - self.float.height) // 2)
+            self.float.left = max(0, (self.app.terminal_width - self.float.width) // 2)
+        self.shadow_float.top = self.float.top + 1
+        self.shadow_float.left = self.float.left + 1
+        self.shadow_float.width = self.float.width
+        self.shadow_float.height = self.float.height
+        self.results_window.height = self._results_rows()
         self.input_buffer.set_document(Document(""), bypass_readonly=True)
         self._on_input_changed()
         self.app.layout.focus(self.input_control)
         self.app.invalidate()
+
+    def _border_top(self) -> StyleAndTextTuples:
+        return [("class:picker.border", "\u250c" + "\u2500" * max(0, self._frame_width - 2) + "\u2510")]
+
+    def _border_bottom(self) -> StyleAndTextTuples:
+        return [("class:picker.border", "\u2514" + "\u2500" * max(0, self._frame_width - 2) + "\u2518")]
 
     def close(self) -> None:
         if not self.active:
@@ -255,6 +343,13 @@ class PickerOverlay:
             if query.strip():
                 self.filtered = self.filtered[:2000]
                 self._maybe_add_create_item(query)
+        elif self.mode == "settings":
+            section_items = [
+                item for item in self.items if self._setting_section(item) == self.settings_section
+            ]
+            self.filtered = filter_items(
+                query, section_items, key=lambda item: item.search_text
+            )
         else:
             self.filtered = filter_items(
                 query, self.items, key=lambda item: item.search_text
@@ -316,6 +411,67 @@ class PickerOverlay:
         return items
 
     # ---------------------------------------------------------------- display
+    def _results_rows(self) -> int:
+        return SETTINGS_ROWS if self.mode == "settings" else RESULTS_ROWS
+
+    def _float_height(self) -> int:
+        """Return the complete frame height, including borders and tabs."""
+        extra = 6 if self.mode == "settings" else 5
+        return self._results_rows() + extra
+
+    @staticmethod
+    def _setting_section(item: PickerItem) -> str:
+        return item.label.split(":", 1)[0].strip() or "General"
+
+    def _settings_sections(self, items: list[PickerItem] | None = None) -> list[str]:
+        source = self.items if items is None else items
+        return list(dict.fromkeys(self._setting_section(item) for item in source))
+
+    def _select_settings_section(self, section: str) -> None:
+        sections = self._settings_sections()
+        if section not in sections:
+            return
+        self.settings_section = section
+        self.index = 0
+        self._on_input_changed()
+
+    def _move_settings_section(self, delta: int) -> None:
+        sections = self._settings_sections()
+        if not sections:
+            return
+        current = sections.index(self.settings_section) if self.settings_section in sections else 0
+        self._select_settings_section(sections[(current + delta) % len(sections)])
+
+    def _settings_tabs_text(self) -> StyleAndTextTuples:
+        fragments: StyleAndTextTuples = []
+        for section in self._settings_sections():
+            selected = section == self.settings_section
+            style = "class:picker.tabs.selected" if selected else "class:picker.tabs.item"
+
+            def handler(event, selected_section=section):
+                if event.event_type in {MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP}:
+                    self._select_settings_section(selected_section)
+
+            fragments.append((style, f"  {section}  ", handler))
+        return fragments
+
+    def _float_width(self) -> int:
+        if self.mode == "menu":
+            widest = max(
+                (
+                    len(item.label)
+                    + len(item.description)
+                    + len(item.keys)
+                    + 8
+                    for item in self.items
+                ),
+                default=28,
+            )
+            return max(28, min(72, widest))
+        if self.mode == "settings":
+            return max(64, min(112, self.app.terminal_width - 6))
+        return max(40, min(96, self.app.terminal_width - 8))
+
     def _prompt_text(self) -> StyleAndTextTuples:
         if self.mode == "confirm":
             message = str(self._store.get("message", ""))
@@ -329,7 +485,7 @@ class PickerOverlay:
             "input": "\u270e",
         }
         icon = icons.get(self.mode, "\u203a")
-        if self.mode == "input":
+        if self.mode in {"input", "settings"}:
             return [("class:picker.prompt", f" {self.title}: ")]
         return [("class:picker.prompt", f" {icon} ")]
 
@@ -352,13 +508,13 @@ class PickerOverlay:
 
     def _render_results(self) -> StyleAndTextTuples:
         fragments: StyleAndTextTuples = []
+        visible = self._results_rows()
         if not self.filtered:
             fragments.append(("class:picker.empty", "   No matching results\n"))
-            for _ in range(RESULTS_ROWS - 1):
+            for _ in range(visible - 1):
                 fragments.append(("class:picker", "\n"))
             return fragments
 
-        visible = RESULTS_ROWS
         start = 0
         if self.index >= visible:
             start = min(self.index - visible + 1, max(0, len(self.filtered) - visible))
@@ -381,23 +537,24 @@ class PickerOverlay:
                 continue
             item, positions = self.filtered[absolute]
             selected = absolute == self.index
-            base = "class:picker.item.selected" if selected else "class:picker.item"
+            item_class = "picker.menu.item" if self.mode == "menu" else "picker.item"
+            base = f"class:{item_class}.selected" if selected else f"class:{item_class}"
             row_fragments: StyleAndTextTuples = self._highlight_label(
                 item.label, positions, base, selected
             )
             if item.description:
                 pad = max(2, 44 - len(item.label))
                 desc_style = (
-                    "class:picker.item.selected.description"
+                    f"class:{item_class}.selected.description"
                     if selected
-                    else "class:picker.item.description"
+                    else f"class:{item_class}.description"
                 )
                 row_fragments.append((desc_style, " " * pad + item.description))
             if item.keys:
                 key_style = (
-                    "class:picker.item.selected.key"
+                    f"class:{item_class}.selected.key"
                     if selected
-                    else "class:picker.item.key"
+                    else f"class:{item_class}.key"
                 )
                 row_fragments.append((key_style, "   " + item.keys))
             handler = mouse_handler(absolute)
@@ -496,7 +653,25 @@ class PickerOverlay:
 
             @keys.add("tab")
             def _tab(event) -> None:
-                self._complete_query()
+                if self.mode == "settings":
+                    self._move_settings_section(1)
+                else:
+                    self._complete_query()
+
+            @keys.add("s-tab")
+            def _shift_tab(event) -> None:
+                if self.mode == "settings":
+                    self._move_settings_section(-1)
+
+            @keys.add("left")
+            def _left(event) -> None:
+                if self.mode == "settings":
+                    self._move_settings_section(-1)
+
+            @keys.add("right")
+            def _right(event) -> None:
+                if self.mode == "settings":
+                    self._move_settings_section(1)
 
             @keys.add(Keys.Any, filter=has_selection)
             def _type_over_selection(event) -> None:

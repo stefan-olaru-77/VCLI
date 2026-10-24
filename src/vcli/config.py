@@ -36,6 +36,8 @@ class Config:
     theme: str = "vscode-dark"
     tab_size: int = 4
     use_spaces: bool = True
+    detect_indentation: bool = True
+    detect_language: bool = True
     line_numbers: bool = True
     relative_line_numbers: bool = False
     highlight_current_line: bool = True
@@ -47,6 +49,12 @@ class Config:
     scroll_off: int = 3
     auto_indent: bool = True
     auto_close_brackets: bool = True
+    auto_closing_quotes: bool = True
+    auto_closing_comments: bool = True
+    bracket_pair_colorization: bool = True
+    color_decorators: bool = True
+    format_on_save: bool = False
+    code_folding: bool = True
     trim_trailing_whitespace_on_save: bool = False
     confirm_exit: bool = True
     show_tab_bar: bool = True
