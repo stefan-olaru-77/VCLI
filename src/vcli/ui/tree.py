@@ -214,7 +214,28 @@ class FileTreeControl(UIControl):
         @keys.add("r")
         def _refresh(event) -> None:
             workspace.reload()
-            self.app.notify("Explorer refreshed")
+            self.app.invalidate()
+
+        @keys.add("f2")
+        def _rename(event) -> None:
+            self.app.rename_selected()
+
+        @keys.add("delete")
+        @keys.add("backspace")
+        def _delete(event) -> None:
+            self.app.delete_selected()
+
+        @keys.add("c")
+        def _copy(event) -> None:
+            self.app._copy_or_move_selected(False)
+
+        @keys.add("m")
+        def _move(event) -> None:
+            self.app._copy_or_move_selected(True)
+
+        @keys.add("f5")
+        def _refresh_full(event) -> None:
+            workspace.reload()
             self.app.invalidate()
 
         @keys.add("escape")

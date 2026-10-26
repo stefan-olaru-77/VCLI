@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from prompt_toolkit.application import get_app
 from prompt_toolkit.clipboard import InMemoryClipboard
 from prompt_toolkit.cursor_shapes import CursorShape
 from prompt_toolkit.filters import Condition, has_completions, has_selection
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
@@ -26,6 +28,7 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 
 from . import __version__
+from . import actions
 from .commands import CommandRegistry
 from .config import Config
 from .fileio import (
@@ -34,6 +37,7 @@ from .fileio import (
     read_file,
     write_file,
 )
+from .search import compile_query
 from .theme import build_style, resolve_theme_key
 from .ui.editor import EditorPane
 from .ui.find import FindBar
@@ -44,6 +48,22 @@ from .ui.tabs import TabBarControl
 from .ui.tree import FileTreeControl
 from .vcs import git_branch
 from .workspace import Workspace
+
+
+def _register_terminal_tab_sequences() -> None:
+    """Teach prompt_toolkit about Konsole/xterm Ctrl+number sequences."""
+    for number in range(1, 10):
+        codepoint = 48 + number
+        key = getattr(Keys, f"Control{number}")
+        sequences = (
+            f"\x1b[{codepoint};5u",  # Kitty keyboard protocol.
+            f"\x1b[27;5;{codepoint}~",  # xterm modifyOtherKeys.
+        )
+        for sequence in sequences:
+            ANSI_SEQUENCES.setdefault(sequence, key)
+
+
+_register_terminal_tab_sequences()
 
 
 class EditorApp:
@@ -94,6 +114,8 @@ class EditorApp:
             mouse_support=Condition(lambda: self.config.mouse),
             clipboard=InMemoryClipboard(),
             cursor=CursorShape.BLINKING_BLOCK,
+            refresh_interval=1.0,
+            before_render=self._before_render,
             input=input,
             output=output,
             on_reset=self._on_reset,
@@ -130,6 +152,10 @@ class EditorApp:
 
     def run(self) -> None:
         self.application.run()
+
+    def _before_render(self, _app: Application) -> None:
+        if self.workspace.refresh_if_changed():
+            self.invalidate()
 
     # ------------------------------------------------------------ construction
     def _build_controls(self) -> None:
@@ -329,6 +355,132 @@ class EditorApp:
         self.open_path(path)
         self.notify(f"Created {self.workspace.relative(path)}")
 
+    def _selected_explorer_node(self):
+        return self.workspace.selected_node()
+
+    def rename_selected(self) -> None:
+        node = self._selected_explorer_node()
+        if node is None:
+            return
+        source = node.path
+
+        def accept(value: str) -> None:
+            name = value.strip()
+            if not name or Path(name).name != name or name in {".", ".."}:
+                self.notify("Enter a valid file or folder name", error=True)
+                return
+            target = source.parent / name
+            if target.exists():
+                self.notify(f"Already exists: {target.name}", error=True)
+                return
+            try:
+                source.rename(target)
+            except OSError as exc:
+                self.notify(f"Could not rename {source.name}: {exc}", error=True)
+                return
+            for pane in self.documents:
+                if pane.path == source:
+                    pane.path = target
+                    pane.title = target.name
+                elif pane.path is not None:
+                    try:
+                        relative = pane.path.relative_to(source)
+                    except ValueError:
+                        continue
+                    pane.path = target / relative
+            self.workspace.reload()
+            self.workspace.reveal(target)
+            self.focus_explorer()
+
+        self.picker.open_input("Rename", source.name, accept)
+
+    def delete_selected(self) -> None:
+        node = self._selected_explorer_node()
+        if node is None:
+            return
+        target = node.path
+        affected = [
+            pane
+            for pane in self.documents
+            if pane.path is not None and (pane.path == target or target in pane.path.parents)
+        ]
+        if any(pane.dirty for pane in affected):
+            self.notify("Save dirty files before deleting them", error=True)
+            return
+
+        def delete_now() -> None:
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            except OSError as exc:
+                self.notify(f"Could not delete {target.name}: {exc}", error=True)
+                return
+            active_pane = self.active_pane
+            for pane in affected:
+                if pane in self.documents:
+                    self.documents.remove(pane)
+            if active_pane in self.documents:
+                self.active_index = self.documents.index(active_pane)
+            else:
+                self.active_index = min(self.active_index, len(self.documents) - 1)
+                if self.active_index >= 0:
+                    self.activate(self.active_index)
+            self.workspace.reload()
+            self.focus_explorer()
+            self.notify(f"Deleted {target.name}")
+
+        self.picker.confirm(
+            "Delete",
+            f"Delete '{target.name}'?",
+            [("Delete", delete_now), ("Cancel", lambda: None)],
+        )
+
+    def _copy_or_move_selected(self, move: bool) -> None:
+        node = self._selected_explorer_node()
+        if node is None:
+            return
+        source = node.path
+        verb = "Move" if move else "Copy"
+
+        def accept(value: str) -> None:
+            destination = Path(value.strip()).expanduser()
+            if not destination.is_absolute():
+                destination = self.workspace.root / destination
+            if destination.is_dir():
+                destination = destination / source.name
+            if destination == source:
+                self.notify("Source and destination are identical", error=True)
+                return
+            try:
+                if move:
+                    source.rename(destination)
+                elif source.is_dir():
+                    shutil.copytree(source, destination)
+                else:
+                    shutil.copy2(source, destination)
+            except OSError as exc:
+                self.notify(f"Could not {verb.lower()} {source.name}: {exc}", error=True)
+                return
+            if move:
+                for pane in self.documents:
+                    if pane.path == source:
+                        pane.path = destination
+                        pane.title = destination.name
+                    elif pane.path is not None:
+                        try:
+                            relative = pane.path.relative_to(source)
+                        except ValueError:
+                            continue
+                        pane.path = destination / relative
+            self.workspace.reload()
+            self.workspace.reveal(destination if move else source)
+            self.focus_explorer()
+            self.notify(f"{verb}d {source.name}")
+
+        self.picker.open_input(f"{verb} To", str(self.workspace.root), accept)
+
     def open_folder(self) -> None:
         def accept(value: str) -> None:
             candidate = Path(value.strip()).expanduser() if value.strip() else Path.cwd()
@@ -453,6 +605,15 @@ class EditorApp:
             self.layout.focus(self.tree_window)
         self.invalidate()
 
+    def focus_explorer(self) -> None:
+        """Show and focus the Explorer so another file can be opened by keyboard."""
+        if self.tree_window is None:
+            return
+        if not self.config.show_sidebar:
+            self.config.show_sidebar = True
+        self.layout.focus(self.tree_window)
+        self.invalidate()
+
     # ------------------------------------------------------------------ commands
     def save_active(self, force: bool = False) -> None:
         pane = self.active_pane
@@ -483,6 +644,143 @@ class EditorApp:
             if pane.dirty and pane.path is not None:
                 pane.save()
         self.notify("All files saved")
+
+    def search_workspace(self) -> None:
+        def accept(query: str) -> None:
+            query = query.strip()
+            if not query:
+                return
+            try:
+                pattern = compile_query(query)
+            except re.error as exc:
+                self.notify(f"Invalid search: {exc}", error=True)
+                return
+            items: list[PickerItem] = []
+            for path in self.workspace.visible_files():
+                try:
+                    loaded = read_file(path)
+                except (OSError, BinaryFileError, FileTooLargeError):
+                    continue
+                for line_number, line in enumerate(loaded.text.splitlines(), 1):
+                    if pattern.search(line):
+                        preview = line.strip()
+                        if len(preview) > 80:
+                            preview = preview[:77] + "..."
+                        items.append(
+                            PickerItem(
+                                label=f"{self.workspace.relative(path)}:{line_number}",
+                                description=preview,
+                                action=lambda p=path, n=line_number: self._open_at_line(p, n),
+                                search_text=f"{path} {line_number} {line}",
+                            )
+                        )
+                        if len(items) >= 5000:
+                            break
+                if len(items) >= 5000:
+                    break
+            self.picker._open("workspace-search", items, f"Search: {query}")
+
+        self.picker.open_input("Search Workspace", "", accept)
+
+    def replace_workspace(self) -> None:
+        def accept_query(query: str) -> None:
+            query = query.strip()
+            if not query:
+                return
+
+            def accept_replacement(replacement: str) -> None:
+                try:
+                    pattern = compile_query(query)
+                except re.error as exc:
+                    self.notify(f"Invalid search: {exc}", error=True)
+                    return
+
+                def replace_now() -> None:
+                    changed = 0
+                    try:
+                        for path in self.workspace.visible_files():
+                            try:
+                                loaded = read_file(path)
+                            except (OSError, BinaryFileError, FileTooLargeError):
+                                continue
+                            updated, count = pattern.subn(replacement, loaded.text)
+                            if count:
+                                write_file(path, updated, loaded.encoding, loaded.newline)
+                                changed += count
+                                for pane in self.documents:
+                                    if pane.path == path and not pane.dirty:
+                                        pane.reload()
+                    except re.error as exc:
+                        self.notify(f"Invalid replacement: {exc}", error=True)
+                        return
+                    self.workspace.reload()
+                    self.notify(f"Replaced {changed} occurrence(s)")
+
+                self.picker.confirm(
+                    "Replace In Workspace",
+                    f"Replace '{query}' in all matching files?",
+                    [("Replace All", replace_now), ("Cancel", lambda: None)],
+                )
+
+            self.picker.open_input("Replace In Workspace", "", accept_replacement)
+
+        self.picker.open_input("Replace In Workspace - Search", "", accept_query)
+
+    def _open_at_line(self, path: Path, line_number: int) -> None:
+        pane = self.open_path(path)
+        if pane is None:
+            return
+        lines = pane.buffer.text.splitlines(keepends=True)
+        cursor = sum(len(line) for line in lines[: max(0, line_number - 1)])
+        pane.buffer.cursor_position = min(cursor, len(pane.buffer.text))
+
+    def show_document_symbols(self) -> None:
+        pane = self.active_pane
+        if pane is None:
+            return
+        patterns = re.compile(
+            r"^\s*(?:(?:async\s+)?def|class|function|interface|struct|enum|fn|func|module|describe|it)\s+[^({:]+"
+        )
+        items: list[PickerItem] = []
+        for number, line in enumerate(pane.buffer.text.splitlines(), 1):
+            if patterns.match(line):
+                label = line.strip()
+                items.append(
+                    PickerItem(
+                        label=f"{number}: {label}",
+                        action=lambda n=number: self._open_at_line(pane.path, n)
+                        if pane.path is not None
+                        else self.goto_line(n),
+                    )
+                )
+        self.picker._open("symbols", items, "Document Symbols")
+
+    def goto_definition(self) -> None:
+        pane = self.active_pane
+        if pane is None:
+            return
+        word = actions.word_at(pane.buffer.text, pane.buffer.cursor_position)
+        if word is None:
+            self.notify("No symbol under cursor", error=True)
+            return
+        _, _, name = word
+        pattern = re.compile(
+            rf"^\s*(?:async\s+def|def|class|function|fn|func|interface|struct|enum)\s+{re.escape(name)}\b"
+        )
+        for number, line in enumerate(pane.buffer.text.splitlines(), 1):
+            if pattern.search(line):
+                self._open_at_line(pane.path, number) if pane.path else self.goto_line(number)
+                return
+        for path in self.workspace.visible_files():
+            try:
+                loaded = read_file(path)
+            except (OSError, BinaryFileError, FileTooLargeError):
+                continue
+            for number, line in enumerate(loaded.text.splitlines(), 1):
+                if pattern.search(line):
+                    self._open_at_line(path, number)
+                    return
+        self.notify(f"Definition not found: {name}", error=True)
 
     def quit_app(self) -> None:
         dirty = [pane for pane in self.documents if pane.dirty]
@@ -625,6 +923,7 @@ class EditorApp:
             bool_item("Workbench: Show Status Bar", "show_status_bar"),
             bool_item("Workbench: Mouse Support", "mouse"),
             bool_item("Files: Confirm Exit", "confirm_exit"),
+            bool_item("Workbench: Copy On Select", "copy_on_select"),
             theme_item(),
         ]
         self.picker.open_menu("Settings", items, searchable=True)
@@ -698,7 +997,13 @@ class EditorApp:
 
     def set_clipboard(self, text: str) -> None:
         self.application.clipboard.set_text(text)
-        self.notify(f"{len(text.splitlines()) or 1} line(s) copied")
+        try:
+            import pyperclip
+
+            pyperclip.copy(text)
+        except Exception:
+            # The optional system-clipboard extra is not required for editing.
+            pass
 
     def get_clipboard(self) -> str:
         return self.application.clipboard.get_data().text
@@ -727,6 +1032,7 @@ class EditorApp:
         register("edit.paste", "Edit: Paste", "Edit", lambda: self._editor_op("paste"), "Ctrl+V")
         register("edit.emmet", "Emmet: Expand Abbreviation", "Edit", lambda: self._editor_op("expand_abbreviation"), "Ctrl+Alt+E")
         register("edit.selectAll", "Edit: Select All", "Edit", lambda: self._editor_op("select_all"), "Ctrl+A")
+        register("edit.addSelection", "Edit: Add Selection to Next Find Match", "Edit", lambda: self._editor_op("add_next_occurrence"), "Alt+D")
         register("edit.duplicate", "Edit: Duplicate Line", "Edit", lambda: self._editor_op("duplicate_line"), "Ctrl+D")
         register("edit.deleteLine", "Edit: Delete Line", "Edit", lambda: self._editor_op("delete_line"), "Ctrl+K")
         register("edit.moveUp", "Edit: Move Line Up", "Edit", lambda: self._editor_op("move_line", -1), "Ctrl+Up")
@@ -737,6 +1043,8 @@ class EditorApp:
         register("edit.find", "Edit: Find", "Edit", lambda: self.find.open(False), "Ctrl+F")
         register("edit.replace", "Edit: Replace", "Edit", lambda: self.find.open(True), "Ctrl+R")
         register("edit.gotoLine", "Edit: Go to Line...", "Edit", self.picker.open_line, "Ctrl+G")
+        register("edit.searchWorkspace", "Edit: Search in Workspace", "Edit", self.search_workspace, "Alt+S")
+        register("edit.replaceWorkspace", "Edit: Replace in Workspace", "Edit", self.replace_workspace, "Alt+R")
 
         register("view.commandPalette", "View: Command Palette", "View", self.picker.open_commands, "F1")
         register("view.quickOpen", "View: Go to File...", "View", self.picker.open_files, "Ctrl+P")
@@ -754,7 +1062,9 @@ class EditorApp:
         register("go.prevTab", "Go: Previous Editor", "Go", lambda: self.next_tab(-1), "Ctrl+PageUp")
         register("go.nextMatch", "Go: Next Match", "Go", lambda: self.find.next_match(1), "F3")
         register("go.prevMatch", "Go: Previous Match", "Go", lambda: self.find.next_match(-1), "Shift+F3")
-        register("go.explorer", "Go: Focus Explorer", "Go", lambda: self.layout.focus(self.tree_window) if self.tree_window else None)
+        register("go.explorer", "Go: Focus Explorer", "Go", self.focus_explorer, "Ctrl+E")
+        register("go.definition", "Go: Go to Definition", "Go", self.goto_definition, "F12")
+        register("go.symbols", "Go: Document Symbols", "Go", self.show_document_symbols, "Alt+O")
 
         register("help.shortcuts", "Help: Keyboard Shortcuts", "Help", self.show_shortcuts)
         register("help.about", "Help: About vcli", "Help", self.show_about)
@@ -811,6 +1121,11 @@ class EditorApp:
         def _prev_tab(event) -> None:
             self.next_tab(-1)
 
+        for tab_number in range(1, 10):
+            @keys.add(f"c-{tab_number}")
+            def _select_tab(event, index=tab_number - 1) -> None:
+                self.activate(index)
+
         # Navigation / overlays (global).
         @keys.add("f1")
         def _palette(event) -> None:
@@ -820,9 +1135,29 @@ class EditorApp:
         def _quick_open(event) -> None:
             self.picker.open_files()
 
+        @keys.add("c-e")
+        def _explorer(event) -> None:
+            self.focus_explorer()
+
         @keys.add("c-g")
         def _goto(event) -> None:
             self.picker.open_line()
+
+        @keys.add("f12")
+        def _definition(event) -> None:
+            self.goto_definition()
+
+        @keys.add("escape", "o")
+        def _symbols(event) -> None:
+            self.show_document_symbols()
+
+        @keys.add("escape", "s")
+        def _workspace_search(event) -> None:
+            self.search_workspace()
+
+        @keys.add("escape", "r")
+        def _workspace_replace(event) -> None:
+            self.replace_workspace()
 
         @keys.add("c-f")
         def _find(event) -> None:
@@ -874,6 +1209,7 @@ class EditorApp:
                 pane = self.active_pane
                 if pane is not None:
                     pane.buffer.exit_selection()
+                    pane.multi_selections.clear()
             else:
                 self.focus_editor()
 
@@ -895,6 +1231,24 @@ class EditorApp:
             pane = self.active_pane
             if pane is not None:
                 pane.select_all()
+
+        @keys.add("c-l", filter=editor)
+        def _select_line(event) -> None:
+            pane = self.active_pane
+            if pane is not None:
+                pane.select_line()
+
+        @keys.add("escape", "w", filter=editor)
+        def _select_word(event) -> None:
+            pane = self.active_pane
+            if pane is not None:
+                pane.select_word()
+
+        @keys.add("escape", "d", filter=editor)
+        def _add_selection(event) -> None:
+            pane = self.active_pane
+            if pane is not None:
+                pane.add_next_occurrence()
 
         @keys.add("c-c", filter=editor)
         def _copy(event) -> None:
@@ -1014,7 +1368,10 @@ class EditorApp:
             pane = self.active_pane
             if pane is None or not event.data or not event.data.isprintable():
                 return
-            pane.replace_selection(event.data)
+            if pane.has_multi_selection():
+                pane.replace_multi_selection(event.data)
+            else:
+                pane.replace_selection(event.data)
 
         # Auto-close pairs.
         for opening, closing in [
@@ -1097,7 +1454,16 @@ Keyboard Shortcuts
   Ctrl+Q          Quit
   Ctrl+PageDown   Next editor
   Ctrl+PageUp     Previous editor
+  Ctrl+1 ... Ctrl+9 Activate editor tab 1 ... 9
   Ctrl+B          Toggle sidebar
+  Ctrl+E          Focus Explorer/sidebar
+  F2              Rename selected Explorer item
+  Delete          Delete selected Explorer item
+  F5              Refresh Explorer
+  Alt+S           Search in workspace
+  Alt+R           Replace in workspace
+  F12             Go to definition
+  Alt+O           Document symbols
   F1              Command palette
   Ctrl+G          Go to line
   Ctrl+F          Find
@@ -1108,6 +1474,9 @@ Keyboard Shortcuts
   Ctrl+Z          Undo
   Ctrl+Y          Redo
   Ctrl+A          Select all
+  Ctrl+L          Select current line
+  Alt+W           Select current word
+  Alt+D           Add next occurrence (multi-cursor)
   Ctrl+C / X / V  Copy / cut / paste
   Ctrl+Alt+E      Emmet: Expand Abbreviation
   Ctrl+D          Duplicate line

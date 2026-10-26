@@ -386,6 +386,13 @@ def style_dict(spec: ThemeSpec) -> dict[str, str]:
         "matching-bracket.other": f"bg:{spec.match_bg} {spec.fg} bold",
         "search.match": f"bg:{spec.match_bg} {spec.fg}",
         "search.match.current": f"bg:{spec.match_current_bg} {spec.bg} bold",
+        # Semantic identifiers (JetBrains-like distinction for generic names)
+        "semantic.variable": f"{spec.fg}",
+        "semantic.parameter": f"{spec.accent}",
+        "semantic.property": f"{spec.accent}",
+        "semantic.function": f"{spec.warning}",
+        "semantic.class": f"{spec.success}",
+        "semantic.constant": f"{spec.accent} bold",
         # Tab bar
         "tabbar": f"bg:{spec.panel_bg} {spec.fg}",
         "tabbar.tab": f"bg:{spec.tab_inactive_bg} {spec.fg}",

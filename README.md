@@ -26,10 +26,20 @@ and [Pygments](https://pygments.org/). No GUI, no Electron: just your terminal.
   MC-inspired borders, centered dialogs and drop shadows.
 - **Tabs**: one tab per file, dirty marker, blinking block cursor, mouse and
   keyboard switching.
+- **Terminal clipboard**: mouse selections can be copied automatically, with
+  optional system clipboard integration through `pyperclip`.
 - **Explorer**: lazy file tree, full-row selection, expand/collapse, hidden
-  files, quick open, active-file reveal, and filtered system directories.
+  files, quick open, active-file reveal, filtered system directories,
+  rename (`F2`), delete confirmation, copy/move and automatic refresh.
+- **Navigation**: `Ctrl+1` ... `Ctrl+9` activate editor tabs; `Ctrl+E` focuses
+  the Explorer; `F12` opens a symbol definition and `Alt+O` lists document
+  symbols.
+- **Editing helpers**: `Ctrl+L` selects the current line, `Alt+W` selects the
+  current word, and `Alt+D` adds the next occurrence as a second cursor.
 - **Find & replace**: live highlighting of all matches, current match,
   case/whole-word/regex toggles, replace one or replace all.
+- **Workspace search**: search or replace across visible workspace files from
+  the command palette (`Alt+S` / `Alt+R`).
 - **Command palette**: fuzzy search over every command, including themes and
   settings.
 - **Themes**: `vscode-dark`, `vscode-light`, `dracula`, `monokai`, `nord`,
@@ -91,7 +101,14 @@ given, the workspace is the first file's folder.
 | `Ctrl+W` | Close editor |
 | `Ctrl+Q` | Quit |
 | `Ctrl+PageDown` / `Ctrl+PageUp` | Next / previous editor |
+| `Ctrl+1` ... `Ctrl+9` | Activate editor tab 1 ... 9 |
 | `Ctrl+B` | Toggle sidebar |
+| `Ctrl+E` | Focus Explorer/sidebar |
+| `F2` | Rename selected Explorer item |
+| `Delete` | Delete selected Explorer item |
+| `F5` | Refresh Explorer |
+| `Alt+S` / `Alt+R` | Search / replace in workspace |
+| `F12` / `Alt+O` | Go to definition / document symbols |
 | `F1` | Command palette |
 | `F9` | Open File menu |
 | `Ctrl+F9` | Toggle code folding |
@@ -105,6 +122,8 @@ given, the workspace is the first file's folder.
 | `Tab` / `Shift+Tab` | Switch find fields / indent / outdent |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+A` | Select all |
+| `Ctrl+L` / `Alt+W` | Select line / word |
+| `Alt+D` | Add next occurrence (multi-cursor) |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste |
 | `Ctrl+D` | Duplicate line |
 | `Ctrl+K` | Delete line |
@@ -161,6 +180,7 @@ else `~/.config/vcli/config.json`:
   "show_status_bar": true,
   "show_hidden_files": false,
   "mouse": true,
+  "copy_on_select": true,
   "auto_indent": true,
   "auto_close_brackets": true,
   "auto_closing_quotes": true,
@@ -193,6 +213,8 @@ inside the application. `line_height` accepts values from 1 to 3.
   and set `TERM=xterm-256color`.
 - Paste is handled by the terminal; on some terminals use
   `Ctrl+Shift+V` instead of `Ctrl+V`.
+- Install `pip install -e ".[system-clipboard]"` to copy selections to the
+  operating system clipboard as well as vcli's internal clipboard.
 
 ## Development
 

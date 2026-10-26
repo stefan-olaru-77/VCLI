@@ -13,9 +13,12 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.layout.containers import ScrollOffsets, Window
 from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.layout.margins import ConditionalMargin
-from prompt_toolkit.layout.processors import HighlightMatchingBracketProcessor
+from prompt_toolkit.layout.processors import (
+    HighlightMatchingBracketProcessor,
+    TabsProcessor,
+)
 from prompt_toolkit.lexers import DynamicLexer
-from prompt_toolkit.mouse_events import MouseEvent
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.selection import SelectionState, SelectionType
 
 from .. import actions
@@ -24,7 +27,13 @@ from ..emmet import expand_abbreviation
 from ..fileio import LoadedFile, write_file
 from ..languages import PLAIN_TEXT, Language, language_for_path
 from .margin import GutterMargin
-from .processors import BracketPairColorizer, ColorDecorator, SearchHighlighter
+from .processors import (
+    BracketPairColorizer,
+    ColorDecorator,
+    MultiSelectionHighlighter,
+    SearchHighlighter,
+    SemanticIdentifierColorizer,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..app import EditorApp
@@ -36,10 +45,18 @@ HIGHLIGHT_LIMIT = 1_500_000
 class LineHeightBufferControl(BufferControl):
     """BufferControl that adds visual spacing between logical lines."""
 
-    def __init__(self, *args, line_height, hidden_lines=None, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        line_height,
+        hidden_lines=None,
+        on_mouse_selection=None,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._line_height = line_height
         self._hidden_lines = hidden_lines or (lambda: set())
+        self._on_mouse_selection = on_mouse_selection
 
     def create_content(self, width: int, height: int, preview_search: bool = False):
         base = super().create_content(width, height, preview_search)
@@ -90,7 +107,7 @@ class LineHeightBufferControl(BufferControl):
         if not visible_lines:
             visible_lines = [0]
         display_row = min(position.y // line_height, len(visible_lines) - 1)
-        return super().mouse_handler(
+        result = super().mouse_handler(
             MouseEvent(
                 position=position._replace(y=visible_lines[display_row]),
                 event_type=mouse_event.event_type,
@@ -98,6 +115,12 @@ class LineHeightBufferControl(BufferControl):
                 modifiers=mouse_event.modifiers,
             )
         )
+        if (
+            mouse_event.event_type == MouseEventType.MOUSE_UP
+            and self._on_mouse_selection is not None
+        ):
+            self._on_mouse_selection()
+        return result
 
 
 class BufferWordCompleter(Completer):
@@ -160,6 +183,7 @@ class EditorPane:
         self.highlight_enabled = len(text) <= HIGHLIGHT_LIMIT
         self._closed = False
         self.folded_lines: set[int] = set()
+        self.multi_selections: list[tuple[int, int]] = []
 
         detected = (
             actions.detect_indentation(text) if app.config.detect_indentation else None
@@ -188,6 +212,14 @@ class EditorPane:
                 lambda: self.lexer if self.highlight_enabled else None
             ),
             input_processors=[
+                TabsProcessor(
+                    tabstop=lambda: self.tab_size,
+                    char1=" ",
+                    char2=" ",
+                    style="class:editor",
+                ),
+                SemanticIdentifierColorizer(lambda: self.language),
+                MultiSelectionHighlighter(self._multi_selection_spans),
                 HighlightMatchingBracketProcessor(chars="()[]{}"),
                 self.search_highlighter,
                 BracketPairColorizer(lambda: self._config().bracket_pair_colorization),
@@ -197,6 +229,7 @@ class EditorPane:
             focus_on_click=True,
             line_height=lambda: self._config().line_height,
             hidden_lines=lambda: self.folded_lines if self._config().code_folding else set(),
+            on_mouse_selection=self._copy_mouse_selection,
         )
         self.window = Window(
             content=self.control,
@@ -236,6 +269,22 @@ class EditorPane:
 
     def _on_cursor_moved(self, buffer: Buffer) -> None:
         self.app.invalidate()
+
+    def _multi_selection_spans(self, line_number: int) -> list[tuple[int, int]]:
+        line_start = self.buffer.document.translate_row_col_to_index(line_number, 0)
+        line_end = line_start + len(self.buffer.document.lines[line_number])
+        return [
+            (max(0, start - line_start), min(line_end, end) - line_start)
+            for start, end in self.multi_selections
+            if start < line_end and end > line_start and end > start
+        ]
+
+    def _copy_mouse_selection(self) -> None:
+        if not self.app.config.copy_on_select:
+            return
+        selection = self.selection()
+        if not selection.empty:
+            self.app.set_clipboard(self.buffer.text[selection.start : selection.end])
 
     @property
     def is_untitled(self) -> bool:
@@ -279,6 +328,7 @@ class EditorPane:
         cursor: int,
         selection: tuple[int, int] | None = None,
     ) -> None:
+        self.multi_selections.clear()
         self.begin_edit()
         clamped = max(0, min(cursor, len(text)))
         self.buffer.document = Document(text, cursor_position=clamped)
@@ -474,6 +524,64 @@ class EditorPane:
 
     def select_all(self) -> None:
         self.set_selection(0, len(self.buffer.text))
+
+    def select_line(self) -> None:
+        """Select the complete current line, including its line ending."""
+        text = self.buffer.text
+        start, end = actions.line_bounds(text, self.buffer.cursor_position)
+        if end < len(text):
+            end += 1
+        self.set_selection(start, end)
+
+    def select_word(self) -> None:
+        """Select the word under the cursor."""
+        boundaries = self.buffer.document.find_boundaries_of_current_word()
+        if boundaries[0] == boundaries[1]:
+            return
+        cursor = self.buffer.cursor_position
+        self.set_selection(cursor + boundaries[0], cursor + boundaries[1])
+
+    def add_next_occurrence(self) -> None:
+        """Add the next occurrence of the current word/selection."""
+        current = self.selection()
+        if current.empty:
+            boundaries = self.buffer.document.find_boundaries_of_current_word()
+            if boundaries[0] == boundaries[1]:
+                return
+            start = self.buffer.cursor_position + boundaries[0]
+            end = self.buffer.cursor_position + boundaries[1]
+            current = actions.Selection(start, end)
+            self.set_selection(start, end)
+        needle = self.buffer.text[current.start : current.end]
+        if not needle:
+            return
+        if not self.multi_selections:
+            self.multi_selections = [(current.start, current.end)]
+        search_from = current.end
+        next_start = self.buffer.text.find(needle, search_from)
+        if next_start < 0:
+            next_start = self.buffer.text.find(needle)
+        candidate = (next_start, next_start + len(needle)) if next_start >= 0 else None
+        if candidate is None or candidate in self.multi_selections:
+            self.app.notify("No more occurrences")
+            return
+        self.multi_selections.append(candidate)
+        self.set_selection(*candidate)
+        self.app.invalidate()
+
+    def has_multi_selection(self) -> bool:
+        return len(self.multi_selections) > 1
+
+    def replace_multi_selection(self, replacement: str) -> None:
+        if not self.has_multi_selection():
+            self.replace_selection(replacement)
+            return
+        text = self.buffer.text
+        for start, end in sorted(self.multi_selections, reverse=True):
+            text = text[:start] + replacement + text[end:]
+        first = min(start for start, _ in self.multi_selections)
+        self.multi_selections.clear()
+        self.set_text(text, first + len(replacement))
 
     def undo(self) -> None:
         self.buffer.undo()

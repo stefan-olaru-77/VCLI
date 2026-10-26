@@ -75,6 +75,7 @@ class Workspace:
         self._flat: list[Node] = []
         self._flat_dirty = True
         self.nodes: list[Node] = []
+        self._directory_snapshot: dict[str, int] = {}
         self.reload()
 
     # ------------------------------------------------------------- scanning
@@ -117,6 +118,28 @@ class Workspace:
         self.nodes = self._scan(self.root, 0)
         self._flat_dirty = True
         self.selected = max(0, min(self.selected, len(self.flatten()) - 1))
+        self._directory_snapshot = self._snapshot_directories()
+
+    def _snapshot_directories(self) -> dict[str, int]:
+        paths = [self.root]
+        paths.extend(Path(key) for key in self._expanded)
+        snapshot: dict[str, int] = {}
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if path.is_dir():
+                snapshot[str(path)] = stat.st_mtime_ns
+        return snapshot
+
+    def refresh_if_changed(self) -> bool:
+        """Reload the visible tree when an expanded directory changed on disk."""
+        current = self._snapshot_directories()
+        if current == self._directory_snapshot:
+            return False
+        self.reload()
+        return True
 
     def refresh_node(self, node: Node) -> None:
         if not node.is_dir:
