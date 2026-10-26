@@ -47,6 +47,7 @@ class Config:
     sidebar_width: int = 32
     mouse: bool = True
     copy_on_select: bool = True
+    cursor_blink: bool = True
     scroll_off: int = 3
     auto_indent: bool = True
     auto_close_brackets: bool = True

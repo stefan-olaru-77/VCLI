@@ -51,12 +51,14 @@ class LineHeightBufferControl(BufferControl):
         line_height,
         hidden_lines=None,
         on_mouse_selection=None,
+        cursor_visible=None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._line_height = line_height
         self._hidden_lines = hidden_lines or (lambda: set())
         self._on_mouse_selection = on_mouse_selection
+        self._cursor_visible = cursor_visible or (lambda: True)
 
     def create_content(self, width: int, height: int, preview_search: bool = False):
         base = super().create_content(width, height, preview_search)
@@ -95,7 +97,7 @@ class LineHeightBufferControl(BufferControl):
                 if base.menu_position is not None
                 else None
             ),
-            show_cursor=base.show_cursor,
+            show_cursor=base.show_cursor and self._cursor_visible(),
         )
 
     def mouse_handler(self, mouse_event):
@@ -230,6 +232,7 @@ class EditorPane:
             line_height=lambda: self._config().line_height,
             hidden_lines=lambda: self.folded_lines if self._config().code_folding else set(),
             on_mouse_selection=self._copy_mouse_selection,
+            cursor_visible=self.app.cursor_visible,
         )
         self.window = Window(
             content=self.control,
@@ -265,9 +268,11 @@ class EditorPane:
 
     def _on_text_changed(self, buffer: Buffer) -> None:
         self.dirty = buffer.text != self.saved_text
+        self.app.reset_blink()
         self.app.on_editor_text_changed(self)
 
     def _on_cursor_moved(self, buffer: Buffer) -> None:
+        self.app.reset_blink()
         self.app.invalidate()
 
     def _multi_selection_spans(self, line_number: int) -> list[tuple[int, int]]:

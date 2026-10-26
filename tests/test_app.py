@@ -407,3 +407,42 @@ def test_close_dirty_tab_mouse(tmp_path: Path):
         assert len(app.documents) == 1
     finally:
         pipe.close()
+
+
+def test_cursor_blink_state_machine(tmp_path: Path):
+    app, pipe = make_app(tmp_path)
+    try:
+        assert app.cursor_visible()
+
+        # One phase later the cursor goes dark, then comes back.
+        app.advance_blink(now=app._blink_next + 0.01)
+        assert not app.cursor_visible()
+        app.advance_blink(now=app._blink_next + 0.01)
+        assert app.cursor_visible()
+
+        # A keystroke or a cursor move shows it again immediately.
+        app.advance_blink(now=app._blink_next + 0.01)
+        assert not app.cursor_visible()
+        app.reset_blink()
+        assert app.cursor_visible()
+
+        # Turning the setting off pins the cursor on.
+        app.config.cursor_blink = False
+        app.advance_blink(now=app._blink_next + 60)
+        assert app.cursor_visible()
+    finally:
+        pipe.close()
+
+
+def test_editor_cursor_follows_blink_phase(tmp_path: Path):
+    app, pipe = make_app(tmp_path)
+    try:
+        app.new_file()
+        control = app.active_pane.control
+        assert control._cursor_visible() is True
+        app.advance_blink(now=app._blink_next + 0.01)
+        assert control._cursor_visible() is False
+        app.reset_blink()
+        assert control._cursor_visible() is True
+    finally:
+        pipe.close()

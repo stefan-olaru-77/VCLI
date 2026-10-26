@@ -181,6 +181,7 @@ else `~/.config/vcli/config.json`:
   "show_hidden_files": false,
   "mouse": true,
   "copy_on_select": true,
+  "cursor_blink": true,
   "auto_indent": true,
   "auto_close_brackets": true,
   "auto_closing_quotes": true,
@@ -215,6 +216,9 @@ inside the application. `line_height` accepts values from 1 to 3.
   `Ctrl+Shift+V` instead of `Ctrl+V`.
 - Install `pip install -e ".[system-clipboard]"` to copy selections to the
   operating system clipboard as well as vcli's internal clipboard.
+- The cursor is blinked in software, so it also blinks in terminals that
+  ignore the blinking-cursor escape sequence. Turn it off with
+  `"cursor_blink": false` or `Workbench: Cursor Blinking` in Settings.
 
 ## Development
 

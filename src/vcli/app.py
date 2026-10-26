@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import shutil
 import re
+import shutil
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -65,6 +66,11 @@ def _register_terminal_tab_sequences() -> None:
 
 _register_terminal_tab_sequences()
 
+# Terminals only honour the blinking cursor shapes on some emulators, so the
+# cursor is blinked in software: each phase lasts this long, and the redraw
+# tick below advances it.
+BLINK_PHASE = 0.5
+
 
 class EditorApp:
     def __init__(
@@ -90,6 +96,8 @@ class EditorApp:
         self.message_error = False
         self._untitled_counter = 0
         self._quitting = False
+        self._blink_visible = True
+        self._blink_next = time.monotonic() + BLINK_PHASE
 
         self.commands = CommandRegistry()
         self.find = FindBar(self)
@@ -114,8 +122,8 @@ class EditorApp:
             full_screen=True,
             mouse_support=Condition(lambda: self.config.mouse),
             clipboard=InMemoryClipboard(),
-            cursor=CursorShape.BLINKING_BLOCK,
-            refresh_interval=1.0,
+            cursor=CursorShape.BLOCK,
+            refresh_interval=BLINK_PHASE,
             before_render=self._before_render,
             input=input,
             output=output,
@@ -155,8 +163,31 @@ class EditorApp:
         self.application.run()
 
     def _before_render(self, _app: Application) -> None:
+        self.advance_blink()
         if self.workspace.refresh_if_changed():
             self.invalidate()
+
+    # ------------------------------------------------------------ cursor blink
+    def cursor_visible(self) -> bool:
+        """Whether the editor cursor should be drawn in this frame."""
+        return self._blink_visible if self.config.cursor_blink else True
+
+    def reset_blink(self) -> None:
+        """Show the cursor again after a keystroke or a cursor move."""
+        self._blink_visible = True
+        self._blink_next = time.monotonic() + BLINK_PHASE
+
+    def advance_blink(self, now: float | None = None) -> None:
+        """Toggle the cursor phase once a full phase has elapsed."""
+        if not self.config.cursor_blink:
+            self._blink_visible = True
+            return
+        moment = time.monotonic() if now is None else now
+        # Without a little slack a tick arriving a hair early would skip a
+        # whole phase, and the cursor would look stuck.
+        if moment + 0.05 >= self._blink_next:
+            self._blink_visible = not self._blink_visible
+            self._blink_next = moment + BLINK_PHASE
 
     # ------------------------------------------------------------ construction
     def _build_controls(self) -> None:
@@ -936,6 +967,7 @@ class EditorApp:
             bool_item("Workbench: Mouse Support", "mouse"),
             bool_item("Files: Confirm Exit", "confirm_exit"),
             bool_item("Workbench: Copy On Select", "copy_on_select"),
+            bool_item("Workbench: Cursor Blinking", "cursor_blink"),
             theme_item(),
         ]
         self.picker.open_menu("Settings", items, searchable=True)
