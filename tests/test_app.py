@@ -148,7 +148,7 @@ def test_open_file_and_close_dirty_tab(tmp_path: Path):
 
     # Choose "Save" in the close dialog: saved and closed.
     app = run_keys(tmp_path, "X" + CTRL_W + ENTER + CTRL_Q, files=(path,))
-    assert app.documents == []
+    assert not app.documents
     assert path.read_text(encoding="utf-8") == "Xoriginal\n"
 
 

@@ -74,7 +74,8 @@ class EditorApp:
         workspace_root: str | Path | None = None,
         *,
         config_file: str | Path | None = None,
-        input=None,
+        # Mirrors the prompt_toolkit Application argument names.
+        input=None,  # pylint: disable=redefined-builtin
         output=None,
     ) -> None:
         self.config = config or Config.load()
@@ -525,7 +526,12 @@ class EditorApp:
                 PickerItem("Cut", "Edit", "Ctrl+X", lambda: self._editor_op("cut")),
                 PickerItem("Copy", "Edit", "Ctrl+C", lambda: self._editor_op("copy")),
                 PickerItem("Paste", "Edit", "Ctrl+V", lambda: self._editor_op("paste")),
-                PickerItem("Emmet: Expand Abbreviation", "Edit", "Ctrl+Alt+E", lambda: self._editor_op("expand_abbreviation")),
+                PickerItem(
+                    "Emmet: Expand Abbreviation",
+                    "Edit",
+                    "Ctrl+Alt+E",
+                    lambda: self._editor_op("expand_abbreviation"),
+                ),
             ]
         self.picker.open_menu(name.title(), items, anchor_x=anchor_x)
 
@@ -769,7 +775,10 @@ class EditorApp:
         )
         for number, line in enumerate(pane.buffer.text.splitlines(), 1):
             if pattern.search(line):
-                self._open_at_line(pane.path, number) if pane.path else self.goto_line(number)
+                if pane.path is not None:
+                    self._open_at_line(pane.path, number)
+                else:
+                    self.goto_line(number)
                 return
         for path in self.workspace.visible_files():
             try:
@@ -864,7 +873,10 @@ class EditorApp:
 
         def cycle_tab_size() -> None:
             values = (2, 4, 8)
-            config.tab_size = values[(values.index(config.tab_size) + 1) % len(values)] if config.tab_size in values else 4
+            if config.tab_size in values:
+                config.tab_size = values[(values.index(config.tab_size) + 1) % len(values)]
+            else:
+                config.tab_size = 4
             for pane in self.documents:
                 if not config.detect_indentation:
                     pane.refresh_preferences()
@@ -998,7 +1010,7 @@ class EditorApp:
     def set_clipboard(self, text: str) -> None:
         self.application.clipboard.set_text(text)
         try:
-            import pyperclip
+            import pyperclip  # pylint: disable=import-error
 
             pyperclip.copy(text)
         except Exception:
@@ -1030,14 +1042,32 @@ class EditorApp:
         register("edit.cut", "Edit: Cut", "Edit", lambda: self._editor_op("cut"), "Ctrl+X")
         register("edit.copy", "Edit: Copy", "Edit", lambda: self._editor_op("copy"), "Ctrl+C")
         register("edit.paste", "Edit: Paste", "Edit", lambda: self._editor_op("paste"), "Ctrl+V")
-        register("edit.emmet", "Emmet: Expand Abbreviation", "Edit", lambda: self._editor_op("expand_abbreviation"), "Ctrl+Alt+E")
+        register(
+            "edit.emmet",
+            "Emmet: Expand Abbreviation",
+            "Edit",
+            lambda: self._editor_op("expand_abbreviation"),
+            "Ctrl+Alt+E",
+        )
         register("edit.selectAll", "Edit: Select All", "Edit", lambda: self._editor_op("select_all"), "Ctrl+A")
-        register("edit.addSelection", "Edit: Add Selection to Next Find Match", "Edit", lambda: self._editor_op("add_next_occurrence"), "Alt+D")
+        register(
+            "edit.addSelection",
+            "Edit: Add Selection to Next Find Match",
+            "Edit",
+            lambda: self._editor_op("add_next_occurrence"),
+            "Alt+D",
+        )
         register("edit.duplicate", "Edit: Duplicate Line", "Edit", lambda: self._editor_op("duplicate_line"), "Ctrl+D")
         register("edit.deleteLine", "Edit: Delete Line", "Edit", lambda: self._editor_op("delete_line"), "Ctrl+K")
         register("edit.moveUp", "Edit: Move Line Up", "Edit", lambda: self._editor_op("move_line", -1), "Ctrl+Up")
         register("edit.moveDown", "Edit: Move Line Down", "Edit", lambda: self._editor_op("move_line", 1), "Ctrl+Down")
-        register("edit.comment", "Edit: Toggle Line Comment", "Edit", lambda: self._editor_op("toggle_comment"), "Ctrl+/")
+        register(
+            "edit.comment",
+            "Edit: Toggle Line Comment",
+            "Edit",
+            lambda: self._editor_op("toggle_comment"),
+            "Ctrl+/",
+        )
         register("edit.indent", "Edit: Indent", "Edit", lambda: self._editor_op("indent"), "Tab")
         register("edit.outdent", "Edit: Outdent", "Edit", lambda: self._editor_op("outdent"), "Shift+Tab")
         register("edit.find", "Edit: Find", "Edit", lambda: self.find.open(False), "Ctrl+F")
@@ -1054,7 +1084,13 @@ class EditorApp:
         register("view.relativeNumbers", "View: Toggle Relative Line Numbers", "View", self.toggle_relative_numbers)
         register("view.hiddenFiles", "View: Toggle Hidden Files", "View", self.toggle_hidden_files)
         register("view.mouse", "View: Toggle Mouse Support", "View", self.toggle_mouse)
-        register("view.toggleFold", "View: Toggle Code Folding", "View", lambda: self._editor_op("toggle_fold"), "Ctrl+F9")
+        register(
+            "view.toggleFold",
+            "View: Toggle Code Folding",
+            "View",
+            lambda: self._editor_op("toggle_fold"),
+            "Ctrl+F9",
+        )
         register("view.theme", "Preferences: Color Theme", "View", self.picker.open_themes)
         register("preferences.settings", "Preferences: Open Settings", "Preferences", self.open_settings)
 
@@ -1350,10 +1386,8 @@ class EditorApp:
                 ('"', '"'), ("'", "'"), ("`", "`"),
             }
             if (bracket_pair and auto_pairs()) or (quote_pair and auto_quotes()):
-                    pane.set_text(
-                        text[: cursor - 1] + text[cursor + 1 :], cursor - 1
-                    )
-                    return
+                pane.set_text(text[: cursor - 1] + text[cursor + 1 :], cursor - 1)
+                return
             buffer.delete_before_cursor()
 
         @keys.add("c-space", filter=editor)

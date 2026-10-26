@@ -24,14 +24,14 @@ def test_find_matches_regex_and_errors():
     assert [(m.start, m.end) for m in matches] == [(1, 2), (4, 6)]
 
     matches, error = find_matches("abc", "(", regex=True)
-    assert matches == []
+    assert not matches
     assert error is not None
 
 
 def test_find_matches_skips_zero_width():
     matches, error = find_matches("abc", r"^|$", regex=True)
     assert error is None
-    assert matches == []
+    assert not matches
 
 
 def test_find_matches_limit():

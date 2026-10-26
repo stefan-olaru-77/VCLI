@@ -1,0 +1,43 @@
+# Pylint configuration for vcli.
+#
+# Every disable below is a deliberate choice for this terminal-UI codebase.
+# Checks not listed here stay enabled, so the CI lint job remains a real gate.
+
+[MAIN]
+py-version = 3.10
+
+[MESSAGES CONTROL]
+disable =
+    # Docstrings live on modules and non-trivial helpers, not on every
+    # widget method and test callback.
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    # prompt_toolkit calls handlers with arguments they never read.
+    unused-argument,
+    # Optional integrations (pyperclip, Pygments lexers, filesystem probes)
+    # are best-effort and catch broad exceptions on purpose.
+    broad-exception-caught,
+    # The UI layer drives EditorApp internals by design; extracting a public
+    # API for them is a separate refactor.
+    protected-access,
+    # Imports are deferred so --help/--version stay fast and optional
+    # dependencies stay optional.
+    import-outside-toplevel,
+    # Size thresholds are opinionated, and satisfying them would only spread
+    # the layout code across more files.
+    too-many-instance-attributes,
+    too-many-public-methods,
+    too-many-arguments,
+    too-many-positional-arguments,
+    too-many-locals,
+    too-many-branches,
+    too-many-return-statements,
+    too-many-statements,
+    too-many-lines,
+    # Astroid cannot infer Filter.__invert__, so prompt_toolkit's
+    # ``~has_completions`` looks like a bad unary operand.
+    invalid-unary-operand-type
+
+[FORMAT]
+max-line-length = 120

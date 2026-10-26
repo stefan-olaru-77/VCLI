@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if workspace_root is None:
         if files:
-            workspace_root = (files[0].absolute().parent)
+            workspace_root = files[0].absolute().parent
         else:
             workspace_root = Path.cwd()
 
